@@ -1,5 +1,8 @@
 #include "audio_output.h"
 #include "rtsp_server.h"
+#include "visualizer_feed.h" // CYD build: mirrors PCM to the visualizer; a safe
+                             // no-op on boards that never call
+                             // visualizer_feed_init()
 
 #include "audio_resample.h"
 #include "dac.h"
@@ -237,6 +240,12 @@ static void playback_task(void *arg) {
       apply_volume(play_buf, play_samples * 2);
       apply_channel_mode(play_buf, play_samples);
       led_audio_feed(play_buf, play_samples);
+      // Mirror the same final-stage PCM led_audio_feed() just got to the
+      // visualizer (CYD build; safe no-op elsewhere). This is the real
+      // AirPlay playback path -- it writes i2s_channel_write() directly
+      // and never goes through the public audio_output_write() below,
+      // which only the Bluetooth A2DP path actually calls.
+      visualizer_feed_push(play_buf, play_samples * 2 * sizeof(int16_t));
       if (i2s_channel_write(tx_handle, play_buf,
                             play_samples * 2 * sizeof(int16_t), &written,
                             portMAX_DELAY) == ESP_OK) {
@@ -385,6 +394,7 @@ void audio_output_stop(void) {
 }
 
 esp_err_t audio_output_write(const void *data, size_t bytes, TickType_t wait) {
+  visualizer_feed_push(data, bytes); // mirror PCM to the visualizer (CYD build)
   size_t written = 0;
   return i2s_channel_write(tx_handle, data, bytes, &written, wait);
 }

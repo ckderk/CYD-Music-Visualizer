@@ -1,0 +1,43 @@
+# Freenove ESP32-S3 2.8" CYD (ES3N28P) -- AirPlay visualizer board.
+#
+# This board has no onboard speaker: it's used to visualize decoded PCM
+# (via components/visualizer), not play it out loud. We still let
+# audio_output_init() bring up a real I2S TX channel (it always does,
+# regardless of DAC choice -- see main/audio/audio_output.c) pointed at
+# this board's real, documented I2S/codec pins, since nothing is attached
+# to them it's a harmless no-op, and it leaves the door open to actually
+# driving the onboard ES8311-class codec + external speaker header later
+# if that's ever wanted.
+#
+# Pins confirmed against the official QDtech ES3C28P/ES3N28P datasheet
+# (same source used for components/boards/cyd-es3n28p/iot_board.h).
+
+CONFIG_BOARD_CYD_ES3N28P=y
+
+# Flash: 16MB external SPI flash.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# PSRAM: 8MB internal OPI PSRAM (octal), per datasheet.
+CONFIG_SPIRAM_MODE_OCT=y
+
+# I2S audio pins (unused -- no external speaker connected in this build,
+# see note above). Amp-enable (GPIO1) is intentionally left unconfigured
+# since we never power an amp on this board.
+CONFIG_I2S_SCK_IO=4
+CONFIG_I2S_BCK_IO=5
+CONFIG_I2S_WS_IO=7
+CONFIG_I2S_DO_IO=6
+
+# Battery voltage sense ADC (documentation only -- our own board.c reads
+# this ADC channel directly rather than through CONFIG_BAT_CHANNEL).
+CONFIG_BAT_CHANNEL=9
+
+# Onboard single-wire RGB status LED (WS2812-style driver chip) -- free
+# AirPlay connection-status indicator via main/led.c.
+CONFIG_LED_RGB_GPIO=42
+
+# No DISPLAY_ENABLED / DISPLAY_DRIVER_* here: this board's ILI9341 panel is
+# driven directly by our own components/visualizer_panel (esp_lcd_panel_io_spi
+# + esp_lcd_new_panel_ili9341), not this project's components/display
+# (which only supports ST7789/OLED and is LVGL-coupled). See INTEGRATION.md.

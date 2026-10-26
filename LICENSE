@@ -21,3 +21,16 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+---
+
+NOTICE — additional files in this fork
+
+The copyright notice and license above cover the original rbouteiller/airplay-esp32
+software, unmodified, which this fork is built on and still includes in full.
+
+The CYD-visualizer-specific additions in this fork — components/visualizer,
+components/visualizer_panel, components/visualizer_metadata,
+components/boards/cyd-es3n28p, and the CYD-specific portions of README.md and CLAUDE.md —
+are Copyright (c) 2026 Derk, and are made available under the same non-commercial terms as
+the license above.

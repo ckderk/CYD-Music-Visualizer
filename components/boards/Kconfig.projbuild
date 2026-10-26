@@ -59,6 +59,10 @@ menu "Board Configuration"
             bool "Louder Esparagus S3 / Louder-ESP32-S3 (ESP32-S3, TAS58xx)"
             depends on IDF_TARGET_ESP32S3
 
+        config BOARD_CYD_ES3N28P
+            bool "Freenove ESP32-S3 2.8\" CYD (ES3N28P) -- AirPlay visualizer, no DAC"
+            depends on IDF_TARGET_ESP32S3
+
     endchoice
 
     config BOARD_TARGET_PATH
@@ -76,6 +80,7 @@ menu "Board Configuration"
         default "waveshare-esp32s3" if BOARD_WAVESHARE_ESP32S3_TOUCH_LCD_154
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_LOUDER
         default "esparagus-audio-brick" if BOARD_ESPARAGUS_LOUDER_S3
+        default "cyd-es3n28p" if BOARD_CYD_ES3N28P
 
     config BOARD_SQUEEZEAMP_COMMON
         bool

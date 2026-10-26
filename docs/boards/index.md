@@ -47,7 +47,12 @@ original ESP32.
 | [Louder-ESP32](louder-esp32.md) | ESP32 / S3 | TAS5805M | ESP32 only | yes | yes |
 | [Louder-ESP32-Plus](louder-esp32.md) | ESP32 / S3 | TAS5825M | ESP32 only | yes | yes |
 | [Seeed XIAO ESP32-C5](xiao-esp32c5.md) | ESP32-C5 | External I2S | — | — | — |
+| [CYD Visualizer](cyd-es3n28p.md) | ESP32-S3 | **none** — ILI9341 visualizer instead | — | — | — |
 | [Custom board](custom.md) | any | any | — | — | — |
+
+The CYD Visualizer is a different kind of board entirely: it has no amplifier and plays
+no audio at all — it's an AirPlay 2 destination that draws audio-reactive visuals on its
+own screen instead. Skip the decision tree above if that's what you're building.
 
 **Bluetooth Classic A2DP is only available on the original ESP32.** The ESP32-S3, S2 and
 C5 have Bluetooth LE only, or no Bluetooth at all, so A2DP is not possible on them. If

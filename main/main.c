@@ -33,6 +33,12 @@
 #endif
 
 #include "iot_board.h"
+#ifdef CONFIG_BOARD_CYD_ES3N28P
+#include "visualizer_feed.h"
+#include "visualizer_render.h"
+#include "visualizer_panel.h"
+#include "visualizer_metadata.h"
+#endif
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -287,6 +293,28 @@ void app_main(void) {
   // Initialize LVGL-dependent board resources (e.g., touch input) after
   // display/LVGL port is ready.
   iot_board_init_lvgl_resources();
+
+#ifdef CONFIG_BOARD_CYD_ES3N28P
+  // AirPlay visualizer: mirror decoded PCM (via the audio_output_write()
+  // hook) into audio-reactive renders on the CYD's own ILI9341 panel,
+  // bypassing LVGL/this project's components/display entirely for that
+  // panel. See INTEGRATION.md for the full rationale.
+  visualizer_feed_init(4096); // ~93ms of ring buffer, stereo frames
+  err = visualizer_panel_init();
+  if (err != ESP_OK) {
+    ESP_LOGE(TAG, "Visualizer panel init failed: %s", esp_err_to_name(err));
+  } else {
+    // Landscape (320x240), USB-C on the right -- matches the swap_xy/mirror
+    // the panel driver applies in visualizer_panel.c's panel_init().
+    visualizer_render_init(visualizer_panel_get_framebuffer(), 320, 240);
+    if (visualizer_metadata_init() == ESP_OK) {
+      visualizer_render_set_metadata_drawer(visualizer_metadata_draw);
+    }
+    xTaskCreatePinnedToCore(visualizer_panel_task, "visualizer", 4096, NULL,
+                            4, NULL, 1);
+    ESP_LOGI(TAG, "Visualizer started");
+  }
+#endif
 
   // Try ethernet first
   bool eth_available = false;

@@ -100,6 +100,9 @@ set( DEPS
     audio-resampler
     esp_eth
     spiffs_storage
+    visualizer
+    visualizer_panel
+    visualizer_metadata
 )
 
 # Bluetooth component only needed when A2DP is enabled

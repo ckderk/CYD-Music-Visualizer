@@ -116,6 +116,7 @@ nav:
       - Amped-ESP32: boards/amped-esp32.md
       - Louder-ESP32: boards/louder-esp32.md
       - Seeed XIAO ESP32-C5: boards/xiao-esp32c5.md
+      - CYD Visualizer (ES3N28P): boards/cyd-es3n28p.md
       - Custom board: boards/custom.md
   - Features:
       - Bluetooth A2DP: features/bluetooth.md
