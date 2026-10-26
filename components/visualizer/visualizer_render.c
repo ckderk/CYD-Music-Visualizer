@@ -52,6 +52,10 @@ static float s_fft_buf[FFT_N * 2]; // interleaved re/im
 static float s_hann[FFT_N];
 static float s_bar_level[SPECTRUM_BARS];  // smoothed, 0..1
 static float s_bar_peak[SPECTRUM_BARS];   // slow-falling peak markers, 0..1
+static float s_bar_smooth[SPECTRUM_BARS]; // s_bar_level + 3-tap spatial blur
+                                           // + extra temporal ease, drawn
+                                           // height only -- peak markers
+                                           // still track the raw level.
 static int16_t s_fft_history[FFT_N];      // rolling window of mono samples
 static size_t s_fft_history_fill = 0;
 
@@ -62,8 +66,13 @@ static int s_wave_write = 0;
 // ---- Particle state ----
 typedef struct {
   float x, y;
-  float vx, vy;
-  float life; // 0..1, fades out
+  float ux, uy; // unit travel direction
+  float speed;  // px/frame, constant for this particle's lifetime
+  float r;      // distance traveled so far along (ux,uy)
+  float max_r;  // distance to the screen edge along (ux,uy) -- computed
+                // once at spawn, so lifespan always matches the actual
+                // journey regardless of speed/decay settings
+  bool alive;
   uint16_t color;
 } particle_t;
 static particle_t s_particles[PARTICLE_COUNT];
@@ -129,6 +138,36 @@ static void draw_line(int x0, int y0, int x1, int y1, uint16_t c) {
 }
 
 // ============================================================================
+// Shared color: continuous hue drift, driven by whichever mode is active
+// ============================================================================
+
+static float s_hue_drift = 0.0f; // degrees, wraps at 360
+
+static void advance_hue_drift(float energy) {
+  // Slow baseline drift so colors evolve even on quiet passages, faster
+  // when the signal is louder -- same idea as the browser prototype's
+  // hueDrift accumulator.
+  s_hue_drift += 0.15f + energy * 1.2f;
+  if (s_hue_drift >= 360.0f) s_hue_drift -= 360.0f;
+}
+
+// Minimal HSV->RGB565. h in [0,360), s/v in [0,1].
+static uint16_t hsv565(float h, float s, float v) {
+  float c = v * s;
+  float x = c * (1.0f - fabsf(fmodf(h / 60.0f, 2.0f) - 1.0f));
+  float m = v - c;
+  float r, g, b;
+  if (h < 60.0f)       { r = c; g = x; b = 0; }
+  else if (h < 120.0f) { r = x; g = c; b = 0; }
+  else if (h < 180.0f) { r = 0; g = c; b = x; }
+  else if (h < 240.0f) { r = 0; g = x; b = c; }
+  else if (h < 300.0f) { r = x; g = 0; b = c; }
+  else                 { r = c; g = 0; b = x; }
+  return rgb565((uint8_t)((r + m) * 255.0f), (uint8_t)((g + m) * 255.0f),
+                (uint8_t)((b + m) * 255.0f));
+}
+
+// ============================================================================
 // Public setup
 // ============================================================================
 
@@ -147,11 +186,12 @@ esp_err_t visualizer_render_init(uint16_t *fb, int width, int height) {
 
   memset(s_bar_level, 0, sizeof(s_bar_level));
   memset(s_bar_peak, 0, sizeof(s_bar_peak));
+  memset(s_bar_smooth, 0, sizeof(s_bar_smooth));
   memset(s_fft_history, 0, sizeof(s_fft_history));
   memset(s_wave_col, 0, sizeof(s_wave_col));
 
   for (int i = 0; i < PARTICLE_COUNT; i++) {
-    s_particles[i].life = 0; // dead, will be (re)spawned on first beat
+    s_particles[i].alive = false; // will be (re)spawned on first onset
   }
 
   fill(0x0000);
@@ -265,6 +305,23 @@ static void update_fft(void) {
       if (s_bar_peak[bar] < s_bar_level[bar]) s_bar_peak[bar] = s_bar_level[bar];
     }
   }
+
+  // Spatial blur across neighboring bars + an extra temporal ease on top of
+  // the VU ballistics above -- takes the edge off bar-to-bar bumpiness
+  // without touching the peak markers' honesty about the raw level.
+  float blurred[SPECTRUM_BARS];
+  for (int bar = 0; bar < SPECTRUM_BARS; bar++) {
+    float left = s_bar_level[bar > 0 ? bar - 1 : bar];
+    float right = s_bar_level[bar < SPECTRUM_BARS - 1 ? bar + 1 : bar];
+    blurred[bar] = (left + s_bar_level[bar] * 2.0f + right) / 4.0f;
+  }
+  float avg_level = 0.0f;
+  for (int bar = 0; bar < SPECTRUM_BARS; bar++) {
+    s_bar_smooth[bar] = s_bar_smooth[bar] * 0.7f + blurred[bar] * 0.3f;
+    avg_level += s_bar_level[bar];
+  }
+  avg_level /= (float)SPECTRUM_BARS;
+  advance_hue_drift(avg_level);
 }
 
 static void draw_spectrum(void) {
@@ -276,17 +333,18 @@ static void draw_spectrum(void) {
 
   for (int bar = 0; bar < SPECTRUM_BARS; bar++) {
     int x = margin + bar * bar_w;
-    int bh = (int)(s_bar_level[bar] * (s_h - 8));
+    int bh = (int)(s_bar_smooth[bar] * (s_h - 8));
     int peak_y = s_h - 4 - (int)(s_bar_peak[bar] * (s_h - 8));
 
-    // Simple vertical gradient: green (quiet) -> yellow -> red (loud),
-    // picked per-pixel-row so a tall bar visibly climbs through the colors.
+    // Hue-drift color: a gentle rainbow spread across the bars that slowly
+    // rotates over time, brighter toward the tip of each bar -- replaces
+    // the old fixed green/yellow/red ballistics gradient.
+    float bar_hue = s_hue_drift + (float)bar * (360.0f / SPECTRUM_BARS) * 0.4f;
+    if (bar_hue >= 360.0f) bar_hue -= 360.0f;
     for (int y = 0; y < bh; y++) {
       float frac = (float)y / (float)(s_h - 8);
-      uint16_t c;
-      if (frac < 0.6f) c = rgb565(30, 220, 90);
-      else if (frac < 0.85f) c = rgb565(230, 210, 40);
-      else c = rgb565(230, 60, 50);
+      float v = 0.5f + frac * 0.5f;
+      uint16_t c = hsv565(bar_hue, 0.85f, v);
       fill_rect(x, s_h - 4 - y, bar_w - gap, 1, c);
     }
     fill_rect(x, peak_y, bar_w - gap, 2, rgb565(255, 255, 255));
@@ -337,18 +395,36 @@ static void draw_waveform(void) {
 // Mode 3: Particle flow (amplitude/beat reactive)
 // ============================================================================
 
-static float s_beat_envelope = 0.0f;
+static float s_bass_env = 0.0f; // fast-attack/slow-decay onset envelope
+
+// Distance from (cx,cy) to the nearest rectangle edge of [0,w]x[0,h] when
+// traveling along unit vector (ux,uy). Used so a particle's lifespan always
+// matches its actual journey to the edge, whatever speed it's given.
+static float edge_distance(float cx, float cy, float ux, float uy, float w,
+                            float h) {
+  float tx = 1e9f, ty = 1e9f;
+  if (ux > 1e-6f) tx = (w - cx) / ux;
+  else if (ux < -1e-6f) tx = (0.0f - cx) / ux;
+  if (uy > 1e-6f) ty = (h - cy) / uy;
+  else if (uy < -1e-6f) ty = (0.0f - cy) / uy;
+  float t = tx < ty ? tx : ty;
+  return t > 1.0f ? t : 1.0f; // never zero-length
+}
 
 static void spawn_particle(float energy) {
   for (int i = 0; i < PARTICLE_COUNT; i++) {
-    if (s_particles[i].life <= 0.0f) {
-      s_particles[i].x = s_w / 2.0f;
-      s_particles[i].y = s_h / 2.0f;
+    if (!s_particles[i].alive) {
+      float cx = s_w / 2.0f, cy = s_h / 2.0f;
       float angle = randf() * 2.0f * (float)M_PI;
-      float speed = 0.5f + energy * 4.0f;
-      s_particles[i].vx = cosf(angle) * speed;
-      s_particles[i].vy = sinf(angle) * speed;
-      s_particles[i].life = 1.0f;
+      float ux = cosf(angle), uy = sinf(angle);
+      s_particles[i].x = cx;
+      s_particles[i].y = cy;
+      s_particles[i].ux = ux;
+      s_particles[i].uy = uy;
+      s_particles[i].speed = 1.0f + energy * 5.0f;
+      s_particles[i].r = 0.0f;
+      s_particles[i].max_r = edge_distance(cx, cy, ux, uy, (float)s_w, (float)s_h);
+      s_particles[i].alive = true;
       uint8_t hue = (uint8_t)(randf() * 255);
       // cheap hue spread across warm colors
       s_particles[i].color = rgb565(
@@ -368,24 +444,31 @@ static void update_particles(void) {
   }
   if (got) energy /= (float)(got * 2);
 
-  // Simple envelope-follower "beat" detector: a sharp rise over the recent
-  // smoothed average spawns a burst of particles. Not real beat-tracking,
-  // just enough to feel reactive without heavy analysis.
-  float smoothed = s_beat_envelope * 0.9f + energy * 0.1f;
-  if (energy > smoothed * 1.5f && energy > 0.02f) {
-    int burst = 1 + (int)(energy * 10);
-    for (int i = 0; i < burst; i++) spawn_particle(energy);
+  // Onset detection: fast-attack/slow-decay envelope, burst fires only on
+  // the ENVELOPE'S jump (a transient/kick), not on "currently loud" -- so
+  // density tracks the beat instead of just the sustained level.
+  float prev_env = s_bass_env;
+  if (energy > s_bass_env) {
+    s_bass_env = s_bass_env * 0.5f + energy * 0.5f; // fast attack
+  } else {
+    s_bass_env = s_bass_env * 0.90f + energy * 0.10f; // slow decay
   }
-  s_beat_envelope = smoothed;
+  float onset = s_bass_env - prev_env;
+  if (onset > 0.015f && s_bass_env > 0.03f) {
+    int burst = 4 + (int)(onset * 300.0f);
+    if (burst > 24) burst = 24;
+    for (int i = 0; i < burst; i++) spawn_particle(s_bass_env);
+  } else if (randf() < 0.03f) {
+    spawn_particle(0.15f); // sparse ambient drift even without a hit
+  }
 
   for (int i = 0; i < PARTICLE_COUNT; i++) {
-    if (s_particles[i].life <= 0.0f) continue;
-    s_particles[i].x += s_particles[i].vx;
-    s_particles[i].y += s_particles[i].vy;
-    s_particles[i].life -= 0.015f;
-    if (s_particles[i].x < 0 || s_particles[i].x >= s_w || s_particles[i].y < 0 ||
-        s_particles[i].y >= s_h) {
-      s_particles[i].life = 0;
+    if (!s_particles[i].alive) continue;
+    s_particles[i].r += s_particles[i].speed;
+    s_particles[i].x += s_particles[i].ux * s_particles[i].speed;
+    s_particles[i].y += s_particles[i].uy * s_particles[i].speed;
+    if (s_particles[i].r >= s_particles[i].max_r) {
+      s_particles[i].alive = false;
     }
   }
 }
@@ -393,11 +476,42 @@ static void update_particles(void) {
 static void draw_particles(void) {
   fade(10);
   for (int i = 0; i < PARTICLE_COUNT; i++) {
-    if (s_particles[i].life <= 0.0f) continue;
+    if (!s_particles[i].alive) continue;
     int x = (int)s_particles[i].x, y = (int)s_particles[i].y;
-    px(x, y, s_particles[i].color);
-    px(x + 1, y, s_particles[i].color);
-    px(x, y + 1, s_particles[i].color);
+
+    // Fade only in the final stretch of the journey (matches the testbed's
+    // edge-distance lifespan) so particles stay bright until they actually
+    // approach the edge, regardless of speed.
+    float t = s_particles[i].r / s_particles[i].max_r;
+    float brightness = (t < 0.82f) ? 1.0f : (1.0f - (t - 0.82f) / 0.18f);
+    if (brightness < 0.0f) brightness = 0.0f;
+
+    uint16_t core = s_particles[i].color;
+    uint8_t r8 = ((core >> 11) & 0x1F) << 3;
+    uint8_t g8 = ((core >> 5) & 0x3F) << 2;
+    uint8_t b8 = (core & 0x1F) << 3;
+
+    // Cheap 3-ring "glow": dim halo on the cardinal neighbors, a mid ring on
+    // the diagonals, full brightness at the core -- stands in for a
+    // radial-gradient blur with no alpha channel to draw it with.
+    uint16_t halo = rgb565((uint8_t)(r8 * 0.25f * brightness),
+                            (uint8_t)(g8 * 0.25f * brightness),
+                            (uint8_t)(b8 * 0.25f * brightness));
+    uint16_t mid = rgb565((uint8_t)(r8 * 0.55f * brightness),
+                           (uint8_t)(g8 * 0.55f * brightness),
+                           (uint8_t)(b8 * 0.55f * brightness));
+    uint16_t full = rgb565((uint8_t)(r8 * brightness), (uint8_t)(g8 * brightness),
+                            (uint8_t)(b8 * brightness));
+
+    px(x - 1, y, halo);
+    px(x + 1, y, halo);
+    px(x, y - 1, halo);
+    px(x, y + 1, halo);
+    px(x - 1, y - 1, mid);
+    px(x + 1, y - 1, mid);
+    px(x - 1, y + 1, mid);
+    px(x + 1, y + 1, mid);
+    px(x, y, full);
   }
 }
 
