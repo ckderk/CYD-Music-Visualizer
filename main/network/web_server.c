@@ -89,8 +89,84 @@ static esp_err_t serve_spiffs_file(httpd_req_t *req, const char *path,
   return ESP_OK;
 }
 
+// Minimal, self-contained WiFi-setup page for boards with no usable SPIFFS
+// partition -- e.g. the CYD visualizer installed via bmorcelli/Launcher,
+// whose own partition table (app0/firmwa/nvs/otadata/coredump) has no room
+// for one. Uses the same /api/wifi/scan and /api/wifi/config endpoints the
+// full data/www/index.html app does, so it's a drop-in substitute for first
+// -time setup, not a different flow. Boards with a working SPIFFS partition
+// are unaffected -- they still get the full app UI from the filesystem.
+static const char WIFI_SETUP_FALLBACK_HTML[] =
+    "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+    "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+    "<title>AirPlay Visualizer Setup</title><style>"
+    "body{font-family:sans-serif;background:#111;color:#eee;margin:0;"
+    "padding:24px;max-width:420px}"
+    "h1{font-size:1.1em;margin:0 0 16px}"
+    "p.hint{font-size:.85em;color:#999;margin-top:-8px}"
+    "input,button{width:100%;padding:10px;margin:6px 0;box-sizing:border-box;"
+    "border-radius:6px;border:1px solid #444;background:#222;color:#eee;"
+    "font-size:1em}"
+    "button{background:#2dd778;color:#000;border:none;font-weight:bold;"
+    "cursor:pointer}"
+    "#status{margin-top:12px;min-height:1.2em;font-size:.9em}"
+    "#networks div{padding:8px;border-bottom:1px solid #333;cursor:pointer}"
+    "#networks div:hover{background:#1a1a1a}"
+    "</style></head><body>"
+    "<h1>Set up WiFi</h1>"
+    "<p class=\"hint\">No filesystem on this install, so this is the basic "
+    "setup page -- everything else still works once connected.</p>"
+    "<button onclick=\"scan()\">Scan for networks</button>"
+    "<div id=\"networks\"></div>"
+    "<input id=\"ssid\" placeholder=\"Network name (SSID)\">"
+    "<input id=\"password\" type=\"password\" placeholder=\"Password\">"
+    "<button onclick=\"save()\">Connect</button>"
+    "<div id=\"status\"></div>"
+    "<script>"
+    "function setStatus(t){document.getElementById('status').textContent=t;}"
+    "function scan(){"
+    "setStatus('Scanning...');"
+    "fetch('/api/wifi/scan').then(function(r){return r.json();})"
+    ".then(function(d){"
+    "var el=document.getElementById('networks');el.innerHTML='';"
+    "setStatus('');"
+    "if(!d.success){setStatus('Scan failed: '+(d.error||''));return;}"
+    "(d.networks||[]).forEach(function(n){"
+    "var row=document.createElement('div');"
+    "row.textContent=n.ssid+' ('+n.rssi+' dBm)';"
+    "row.onclick=function(){document.getElementById('ssid').value=n.ssid;};"
+    "el.appendChild(row);"
+    "});"
+    "}).catch(function(){setStatus('Scan failed');});"
+    "}"
+    "function save(){"
+    "var ssid=document.getElementById('ssid').value;"
+    "var password=document.getElementById('password').value;"
+    "if(!ssid){setStatus('Enter a network name');return;}"
+    "setStatus('Connecting...');"
+    "fetch('/api/wifi/config',{method:'POST',"
+    "headers:{'Content-Type':'application/json'},"
+    "body:JSON.stringify({ssid:ssid,password:password})})"
+    ".then(function(r){return r.json();})"
+    ".then(function(d){"
+    "setStatus(d.success?'Saved. Restarting...':'Failed: '+(d.error||''));"
+    "}).catch(function(){setStatus('Request failed');});"
+    "}"
+    "</script></body></html>";
+
 // API handlers
 static esp_err_t root_handler(httpd_req_t *req) {
+  // Prefer the full app UI from SPIFFS when it's actually there. On boards
+  // where it isn't (no SPIFFS partition at all, rather than just a missing
+  // file), fall back to the embedded setup page above instead of a flat
+  // 404 that leaves first-time WiFi setup with no way in.
+  FILE *probe = fopen("/spiffs/www/index.html", "r");
+  if (!probe) {
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_send(req, WIFI_SETUP_FALLBACK_HTML, HTTPD_RESP_USE_STRLEN);
+    return ESP_OK;
+  }
+  fclose(probe);
   return serve_spiffs_file(req, "/spiffs/www/index.html", "text/html");
 }
 
