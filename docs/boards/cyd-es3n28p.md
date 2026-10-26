@@ -54,23 +54,32 @@ project's existing RTSP event system for title/artist/album/progress.
 
 This firmware can also run as an app on an SD card under
 [bmorcelli/Launcher](https://github.com/bmorcelli/M5Stick-Launcher), the same way other
-ports for this board (Marauder, PorkChop) do. Launcher's installer reads an embedded ESP32
-partition table at offset `0x8000` and dynamically creates matching partitions from it, so
-any **merged** binary works regardless of what build tool produced it:
+ports for this board (Marauder, PorkChop) do.
 
-```bash
-esptool.py --chip esp32s3 merge_bin -o cyd-visualizer-merged.bin \
-  --flash_mode qio --flash_size 16MB \
-  0x0     .pio/build/cyd-es3n28p/bootloader.bin \
-  0x8000  .pio/build/cyd-es3n28p/partitions.bin \
-  0x10000 .pio/build/cyd-es3n28p/firmware.bin
-```
+**Just copy `.pio/build/cyd-es3n28p/firmware.bin` onto the SD card and use Launcher's
+Install option on it directly — do not merge it with the bootloader/partition table.**
+Launcher owns its own fixed partition table (`app0`/`firmwa` app slots, `nvs`, `otadata`,
+`coredump` — no `storage`/SPIFFS partition at all) and writes a bare app binary straight
+into its own app slot, preserving its own bootloader and table. A `merge_bin`'d image that
+includes *this project's own* bootloader and `partitions.csv` (previous revisions of this
+doc recommended exactly that) overwrites Launcher's bootloader/table with one it doesn't
+expect and reliably produces a `flash read failed` error on Launcher's next boot — confirmed
+on real hardware, not a theoretical concern. If you ever need to inspect what's actually on
+the chip, `esptool.py read_flash 0x8000 0xC00 ptable.bin` followed by
+`gen_esp32part.py ptable.bin` dumps the live partition table without touching anything.
 
-Drop the merged file on the SD card and use Launcher's **Install** option on it.
+Because Launcher's own table has no SPIFFS partition, this board never has the `data/www/`
+web UI available when installed this way — `visualizer_panel.c`'s screen doesn't need it,
+but `main/network/web_server.c`'s root page does for first-time WiFi setup. `root_handler()`
+detects the missing SPIFFS mount and serves a small built-in fallback setup page instead of
+a 404 in that case, so WiFi setup still works; every other board keeps the full app UI from
+SPIFFS as before, unaffected.
 
-Flashing straight over USB during development (`pio run -t upload`) overwrites Launcher on
-the board — expected and easily reversed by reflashing Launcher itself and then installing
-this firmware's merged `.bin` from the SD card as above.
+Flashing straight over USB during development (`pio run -e cyd-es3n28p -t upload`) overwrites
+Launcher on the board — expected and easily reversed by reflashing Launcher itself and then
+installing this firmware's plain `firmware.bin` from the SD card as above. Note the build
+target is just `-t upload` (or no `-t` at all for a plain build) — `-t build` is not a real
+PlatformIO target and fails immediately with a confusing SCons error unrelated to this board.
 
 ## Related
 

@@ -23,7 +23,9 @@ ESP32 AirPlay 2 Receiver — firmware that turns ESP32/ESP32-S3/ESP32-P4 boards 
 
 **PlatformIO** (recommended):
 ```bash
-pio run -e <env> -t build          # Build firmware
+pio run -e <env>                   # Build firmware (no -t; "-t build" is not a real
+                                    # PlatformIO target and fails with a confusing
+                                    # SCons "Do not know how to make target" error)
 pio run -e <env> -t upload          # Build + flash via USB
 pio run -e <env> -t monitor         # Serial monitor (115200 baud)
 pio run -e <env> -t uploadfs        # Flash SPIFFS from data/
