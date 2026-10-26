@@ -34,6 +34,7 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 
 #include "visualizer_render.h"
 #include "visualizer_feed.h"
@@ -59,6 +60,27 @@ static uint16_t *s_fb = NULL;
 static esp_lcd_panel_handle_t s_panel = NULL;
 static i2c_master_dev_handle_t s_touch_dev = NULL;
 static bool s_touch_was_down = false;
+
+// Signaled by on_color_trans_done() once the SPI DMA engine has actually
+// finished reading s_fb for the in-flight esp_lcd_panel_draw_bitmap() call.
+// esp_lcd_panel_draw_bitmap() itself can return well before that -- the I/O
+// config below gives it a transaction queue (trans_queue_depth = 4) so it
+// can queue a transfer and hand control back immediately -- and this
+// project reuses a single framebuffer across frames with no double
+// buffering, so without waiting on this semaphore the render loop starts
+// overwriting s_fb while the panel is still streaming the previous frame
+// out of it. See visualizer_panel_flush().
+static SemaphoreHandle_t s_flush_done = NULL;
+
+static bool IRAM_ATTR on_color_trans_done(esp_lcd_panel_io_handle_t panel_io,
+                                           esp_lcd_panel_io_event_data_t *edata,
+                                           void *user_ctx) {
+  (void)panel_io;
+  (void)edata;
+  BaseType_t woken = pdFALSE;
+  xSemaphoreGiveFromISR((SemaphoreHandle_t)user_ctx, &woken);
+  return woken == pdTRUE;
+}
 
 // ============================================================================
 // Panel (SPI, ILI9341)
@@ -96,6 +118,20 @@ static esp_err_t panel_init(void) {
   ESP_ERROR_CHECK(
       esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_cfg,
                                 &io_handle));
+
+  // Binary semaphore starts "empty" by default, which is what we want:
+  // the first visualizer_panel_flush() call issues a transfer and then
+  // waits for it, same as every call after it.
+  s_flush_done = xSemaphoreCreateBinary();
+  if (s_flush_done != NULL) {
+    esp_lcd_panel_io_callbacks_t trans_cbs = {
+        .on_color_trans_done = on_color_trans_done,
+    };
+    ESP_ERROR_CHECK(esp_lcd_panel_io_register_event_callbacks(
+        io_handle, &trans_cbs, s_flush_done));
+  } else {
+    ESP_LOGW(TAG, "flush-done semaphore alloc failed -- frame tearing risk");
+  }
 
   // RST shares CHIP_PU (no separate GPIO) -- see iot_board.h / porting notes.
   esp_lcd_panel_dev_config_t panel_cfg = {
@@ -213,6 +249,15 @@ void visualizer_panel_flush(void) {
     return;
   }
   esp_lcd_panel_draw_bitmap(s_panel, 0, 0, PANEL_WIDTH, PANEL_HEIGHT, s_fb);
+  // Block here until THIS transfer (the one just submitted above) has
+  // actually finished -- draw_bitmap() can return as soon as it's queued
+  // (trans_queue_depth lets it queue up to 4), well before the SPI DMA
+  // engine is done reading s_fb. Without this wait, the caller loops back
+  // into the next render pass and starts mutating s_fb while it's still
+  // mid-transfer.
+  if (s_flush_done != NULL) {
+    xSemaphoreTake(s_flush_done, portMAX_DELAY);
+  }
 }
 
 void visualizer_panel_task(void *arg) {

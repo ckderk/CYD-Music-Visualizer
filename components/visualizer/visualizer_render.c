@@ -52,10 +52,16 @@ static float s_fft_buf[FFT_N * 2]; // interleaved re/im
 static float s_hann[FFT_N];
 static float s_bar_level[SPECTRUM_BARS];  // smoothed, 0..1
 static float s_bar_peak[SPECTRUM_BARS];   // slow-falling peak markers, 0..1
-static float s_bar_smooth[SPECTRUM_BARS]; // s_bar_level + 3-tap spatial blur
-                                           // + extra temporal ease, drawn
-                                           // height only -- peak markers
-                                           // still track the raw level.
+static float s_bar_smooth[SPECTRUM_BARS]; // 3-tap spatial blur of s_bar_level,
+                                           // drawn height only -- peak markers
+                                           // still track the raw level. No
+                                           // extra temporal filtering here:
+                                           // s_bar_level already has its own
+                                           // attack/decay ballistics, and
+                                           // stacking a second one on top
+                                           // compounds the lag enough that
+                                           // bars never quite reach full
+                                           // height (see update_fft()).
 static int16_t s_fft_history[FFT_N];      // rolling window of mono samples
 static size_t s_fft_history_fill = 0;
 
@@ -107,13 +113,21 @@ static void fill(uint16_t c) {
 
 static void fade(uint8_t amount) {
   // Cheap persistence/trail effect: pull every pixel a bit toward black.
+  // Unpack to 8-bit-per-channel first so `amount` means an 8-bit step, as
+  // every call site's magic number assumes -- subtracting it straight from
+  // RGB565's raw 5/6/5-bit fields (as this used to) removed roughly a third
+  // of max brightness every single frame, so a particle's trail was gone
+  // within 2-3 frames (~75ms) instead of the slow fade the browser testbed
+  // had, and looked like it had no tail at all.
   for (int i = 0; i < s_w * s_h; i++) {
     uint16_t c = s_fb[i];
-    uint8_t r = (c >> 11) & 0x1F, g = (c >> 5) & 0x3F, b = c & 0x1F;
+    uint8_t r = ((c >> 11) & 0x1F) << 3;
+    uint8_t g = ((c >> 5) & 0x3F) << 2;
+    uint8_t b = (c & 0x1F) << 3;
     r = (r > amount) ? r - amount : 0;
-    g = (g > amount * 2) ? g - amount * 2 : 0;
+    g = (g > amount) ? g - amount : 0;
     b = (b > amount) ? b - amount : 0;
-    s_fb[i] = (uint16_t)((r << 11) | (g << 5) | b);
+    s_fb[i] = rgb565(r, g, b);
   }
 }
 
@@ -317,7 +331,9 @@ static void update_fft(void) {
   }
   float avg_level = 0.0f;
   for (int bar = 0; bar < SPECTRUM_BARS; bar++) {
-    s_bar_smooth[bar] = s_bar_smooth[bar] * 0.7f + blurred[bar] * 0.3f;
+    // Spatial blur only -- see s_bar_smooth's comment above for why an
+    // extra temporal blend used to live here and why it was removed.
+    s_bar_smooth[bar] = blurred[bar];
     avg_level += s_bar_level[bar];
   }
   avg_level /= (float)SPECTRUM_BARS;
